@@ -31,7 +31,6 @@ def process_file(filename):
             content = "\n".join(f"{col}: {row[col]}" for col in df.columns)
             documents.append(Document(page_content=content))
     else:
-        from langchain.document_loaders import TextLoader
         loader = TextLoader(path, encoding="utf-8")
         documents = loader.load()
 

@@ -4,13 +4,15 @@ import gradio as gr
 import pandas as pd
 from langchain_community.document_loaders import TextLoader
 from langchain_community.vectorstores import FAISS
-from langchain.chains import ConversationalRetrievalChain
+from langchain.chains import ConversationalRetrievalChain, RetrievalQA
 from langchain.schema import Document, HumanMessage, AIMessage
 from langchain_ollama import OllamaLLM
-from langchain_community.embeddings import FakeEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain.text_splitter import CharacterTextSplitter
 
 UPLOAD_FOLDER = "uploaded"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+state = {"chain": None}
 
 def unzip_file(zip_path):
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -31,22 +33,29 @@ def process_file(filename):
             content = "\n".join(f"{col}: {row[col]}" for col in df.columns)
             documents.append(Document(page_content=content))
     else:
-        loader = TextLoader(path, encoding="utf-8")
-        documents = loader.load()
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+        documents.append(Document(page_content=text))
 
-    embeddings = FakeEmbeddings(size=1536)
-    vectorstore = FAISS.from_documents(documents, embeddings)
+    # Segmentar documento
+    splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    split_docs = splitter.split_documents(documents)
 
+    # Embeddings reais
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    vectorstore = FAISS.from_documents(split_docs, embeddings)
+
+    # LLM local
     llm = OllamaLLM(model="mistral")
 
-    qa_chain = ConversationalRetrievalChain.from_llm(
-        llm,
-        retriever=vectorstore.as_retriever()
+    # QA Chain
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        retriever=vectorstore.as_retriever(search_kwargs={"k": 10}),
+        return_source_documents=True
     )
     return qa_chain
 
-
-state = {"chain": None}
 
 def upload_and_select(zip_file):
     if not zip_file:
@@ -66,17 +75,18 @@ def perguntar(pergunta, chat_log=[]):
         return "Nenhum arquivo carregado.", chat_log
 
     chat_history_lc = []
-    for user, bot in chat_log:
-        chat_history_lc.append(HumanMessage(content=user))
-        chat_history_lc.append(AIMessage(content=bot))
+    for msg in chat_log:
+        if msg["role"] == "user":
+            chat_history_lc.append(HumanMessage(content=msg["content"]))
+        elif msg["role"] == "assistant":
+            chat_history_lc.append(AIMessage(content=msg["content"]))
 
-    resposta = state["chain"].invoke({
-        "question": pergunta,
-        "chat_history": chat_history_lc
-    })
+    resposta = state["chain"].invoke({"query": pergunta})
 
-    chat_log.append([pergunta, resposta["answer"]])
-    return resposta["answer"], chat_log
+    chat_log.append({"role": "user", "content": pergunta})
+    chat_log.append({"role": "assistant", "content": resposta["result"]})
+
+    return resposta["result"], chat_log
 
 with gr.Blocks() as demo:
     zip_input = gr.File(label="Envie seu arquivo .zip")
@@ -84,7 +94,7 @@ with gr.Blocks() as demo:
     file_list = gr.Dropdown(label="Arquivos extraídos")
     pergunta = gr.Textbox(label="Pergunta")
     resposta = gr.Textbox(label="Resposta")
-    chatbox = gr.Chatbot()
+    chatbox = gr.Chatbot(type="messages")
 
     zip_input.change(upload_and_select, inputs=zip_input, outputs=[status, file_list])
     file_list.change(carregar_arquivo, inputs=file_list, outputs=status)

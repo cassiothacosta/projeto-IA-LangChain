@@ -6,4 +6,7 @@ tiktoken
 python-dotenv
 langchain-community
 langchain-ollama
+sentence-transformers
+langchain-huggingface
+huggingface_hub[hf_xet]
 pandas
